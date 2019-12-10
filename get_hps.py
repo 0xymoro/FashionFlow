@@ -5,7 +5,7 @@
 import os
 import sys
 import time
-
+import pickle
 import horovod.tensorflow as hvd
 import numpy as np
 import tensorflow as tf
@@ -70,12 +70,15 @@ def init_visualizations(hps, model, logdir):
 # ===
 def get_data(hps, sess):
     if hps.image_size == -1:
-        hps.image_size = {'mnist': 32, 'cifar10': 32, 'imagenet-oord': 64,
+        # MODIFIED: ADDED image_size FOR fashion-flow PROBLEM
+        hps.image_size = {'mnist': 32, 'cifar10': 32, 'imagenet-oord': 64, 'fashion-flow': 32,
                           'imagenet': 256, 'celeba': 256, 'lsun_realnvp': 64, 'lsun': 256}[hps.problem]
     if hps.n_test == -1:
-        hps.n_test = {'mnist': 10000, 'cifar10': 10000, 'imagenet-oord': 50000, 'imagenet': 50000,
+        # MODIFIED: ADDED n_test FOR fashion-flow PROBLEM
+        hps.n_test = {'mnist': 10000, 'cifar10': 10000, 'imagenet-oord': 50000, 'imagenet': 50000, 'fashion-flow': 20000,
                       'celeba': 3000, 'lsun_realnvp': 300*hvd.size(), 'lsun': 300*hvd.size()}[hps.problem]
-    hps.n_y = {'mnist': 10, 'cifar10': 10, 'imagenet-oord': 1000,
+    # MODIFIED: ADDED n_y FOR fashion-flow PROBLEM
+    hps.n_y = {'mnist': 10, 'cifar10': 10, 'imagenet-oord': 1000, 'fashion-flow': 1,
                'imagenet': 1000, 'celeba': 1, 'lsun_realnvp': 1, 'lsun': 1}[hps.problem]
     if hps.data_dir == "":
         hps.data_dir = {'mnist': None, 'cifar10': None, 'imagenet-oord': '/mnt/host/imagenet-oord-tfr', 'imagenet': '/mnt/host/imagenet-tfr',
@@ -99,9 +102,10 @@ def get_data(hps, sess):
         s * s // (hps.image_size * hps.image_size)
 
     print("Rank {} Batch sizes Train {} Test {} Init {}".format(
-        hvd.rank(), hps.local_batch_train, hps.local_batch_test, hps.local_batch_init))
+        hvd.rank(), hps.local_batch_train, hps.local_batch_test, hps.local_batch_init), flush=True)
 
-    if hps.problem in ['imagenet-oord', 'imagenet', 'celeba', 'lsun_realnvp', 'lsun']:
+    # MODIFIED: ADDED fashion-flow PROBLEM FOR DATA LOADER CHECK
+    if hps.problem in ['imagenet-oord', 'imagenet', 'celeba', 'lsun_realnvp', 'lsun', 'fashion-flow']:
         hps.direct_iterator = True
         import data_loaders.get_data as v
         train_iterator, test_iterator, data_init = \
@@ -194,9 +198,9 @@ def infer(sess, model, hps, iterator):
 
 
 def train(sess, model, hps, logdir, visualise):
-    _print(hps)
-    _print('Starting training. Logging to', logdir)
-    _print('epoch n_processed n_images ips dtrain dtest dsample dtot train_results test_results msg')
+    _print(hps, flush=True)
+    _print('Starting training. Logging to', logdir, flush=True)
+    _print('epoch n_processed n_images ips dtrain dtest dsample dtot train_results test_results msg', flush=True)
 
     # Train
     sess.graph.finalize()
@@ -243,6 +247,15 @@ def train(sess, model, hps, logdir, visualise):
             train_logger.log(epoch=epoch, n_processed=n_processed, n_images=n_images, train_time=int(
                 train_time), **process_results(train_results))
 
+            
+        #MODIFIED: Save checkpoints and sample every 10 epochs
+        ###########
+        if (epoch % 10 == 0):
+            model.save(logdir + "epoch" + str(epoch) + ".ckpt")
+            visualise(epoch)
+        ###########
+            
+            
         if epoch < 10 or (epoch < 50 and epoch % 10 == 0) or epoch % hps.epochs_full_valid == 0:
             test_results = []
             msg = ''
@@ -273,12 +286,13 @@ def train(sess, model, hps, logdir, visualise):
             if epoch == 1 or epoch == 10 or epoch % hps.epochs_full_sample == 0:
                 visualise(epoch)
             dsample = time.time() - t
+            
 
             if hvd.rank() == 0:
                 dcurr = time.time() - tcurr
                 tcurr = time.time()
                 _print(epoch, n_processed, n_images, "{:.1f} {:.1f} {:.1f} {:.1f} {:.1f}".format(
-                    ips, dtrain, dtest, dsample, dcurr), train_results, test_results, msg)
+                    ips, dtrain, dtest, dsample, dcurr), train_results, test_results, msg, flush=True)
 
             # model.polyak_swap()
 
@@ -294,12 +308,12 @@ def get_its(hps):
 
     # Do a full validation run
     if hvd.rank() == 0:
-        print(hps.n_test, hps.local_batch_test, hvd.size())
+        print(hps.n_test, hps.local_batch_test, hvd.size(), flush=True)
     assert hps.n_test % (hps.local_batch_test * hvd.size()) == 0
     full_test_its = hps.n_test // (hps.local_batch_test * hvd.size())
 
     if hvd.rank() == 0:
-        print("Train epoch size: " + str(train_epoch))
+        print("Train epoch size: " + str(train_epoch), flush=True)
     return train_its, test_its, full_test_its
 
 
@@ -333,8 +347,9 @@ if __name__ == "__main__":
                         default='./logs', help="Location to save logs")
 
     # Dataset hyperparams:
+    # MODIFIED: ADDED fashion-flow PROBLEM
     parser.add_argument("--problem", type=str, default='cifar10',
-                        help="Problem (mnist/cifar10/imagenet")
+                        help="Problem (mnist/cifar10/imagenet/fashion-flow")
     parser.add_argument("--category", type=str,
                         default='', help="LSUN category")
     parser.add_argument("--data_dir", type=str, default='',
@@ -349,8 +364,9 @@ if __name__ == "__main__":
                         help="# Threads for parallel map")
 
     # Optimization hyperparams:
+    # MODIFIED: change steps per epoch to 5000 from 50000
     parser.add_argument("--n_train", type=int,
-                        default=50000, help="Train epoch size")
+                        default=5000, help="Train epoch size")
     parser.add_argument("--n_test", type=int, default=-
                         1, help="Valid epoch size")
     parser.add_argument("--n_batch_train", type=int,
@@ -411,4 +427,7 @@ if __name__ == "__main__":
                         help="Coupling type: 0=additive, 1=affine")
 
     hps = parser.parse_args()  # So error if typo
-    main(hps)
+#     print(hps)
+    with open('hps.pkl', 'wb') as f:
+        pickle.dump(hps, f)
+#     main(hps)
